@@ -17,4 +17,3 @@ Arduino-based self-balancing robot using MPU6050 for tilt sensing and PID contro
 
 #Video
 https://github.com/user-attachments/assets/1220ce7b-8438-449d-bd68-f73b5b143887
-
