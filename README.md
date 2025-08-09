@@ -1,16 +1,136 @@
-# Self Balancing Robot - Arduino
+#include <PID_v1.h>
+#include "I2Cdev.h"
+#include "MPU6050_6Axis_MotionApps20.h"
+#include "Wire.h"
 
-## Description
-Arduino-based self-balancing robot using MPU6050 for tilt sensing and PID control for stability. Data is processed via a complementary filter to calculate the tilt angle. L298N motor driver controls the motors via PWM.
+// MPU6050 Setup
+MPU6050 mpu;
+Quaternion q;
+VectorFloat gravity;
+float ypr[3];
+uint8_t fifoBuffer[64];
 
-## Required Libraries
-- PID_v1
-- I2Cdev
-- MPU6050
+// PID variables
+double input = 0;
+double output = 0;
+double setpoint = 0;
 
-## How to Install
-1. Download and install Arduino IDE.
-2. Install the required libraries via Arduino IDE Library Manager or manually.
-3. Open `Self_Balancing_Robot.ino` in Arduino IDE.
-4. Select your board (Arduino Uno) and correct COM port.
-5. Upload the sketch.
+// 🛠️ New PID Tuning (smaller KI and KD for stability, slightly reduced KP)
+#define KP 24.0
+#define KI 80
+#define KD 1.2
+
+PID pid(&input, &output, &setpoint, KP, KI, KD, DIRECT);
+
+// Motor pins
+const int motor1Pin1 = 4;
+const int motor1Pin2 = 5;
+const int enableMotor1 = 9;
+const int motor2Pin1 = 6;
+const int motor2Pin2 = 7;
+const int enableMotor2 = 10;
+
+// Constants
+#define MAX_PWM 255
+#define MIN_EFFECTIVE_PWM 45
+#define DEADZONE 5
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin();
+  delay(500);
+
+  pinMode(motor1Pin1, OUTPUT);
+  pinMode(motor1Pin2, OUTPUT);
+  pinMode(enableMotor1, OUTPUT);
+  pinMode(motor2Pin1, OUTPUT);
+  pinMode(motor2Pin2, OUTPUT);
+  pinMode(enableMotor2, OUTPUT);
+
+  analogWrite(enableMotor1, 0);
+  analogWrite(enableMotor2, 0);
+
+  mpu.initialize();
+  if (!mpu.testConnection()) {
+    Serial.println("MPU6050 connection failed!");
+    while (1);
+  }
+
+  mpu.dmpInitialize();
+  mpu.setDMPEnabled(true);
+  delay(2000);
+
+  // === Auto-calibration ===
+  Serial.println("Calibrating...");
+  double sum = 0;
+  int samples = 100;
+  for (int i = 0; i < samples; i++) {
+    if (mpu.dmpGetCurrentFIFOPacket(fifoBuffer)) {
+      mpu.dmpGetQuaternion(&q, fifoBuffer);
+      mpu.dmpGetGravity(&gravity, &q);
+      mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
+      sum += -ypr[1] * 180 / M_PI;
+    }
+    delay(10);
+  }
+  setpoint = sum / samples;
+
+  // 🔧 Updated offset to fix forward/backward fall
+  setpoint += 1.0;
+
+  Serial.print("Final Setpoint: ");
+  Serial.println(setpoint);
+
+  pid.SetMode(AUTOMATIC);
+  pid.SetOutputLimits(-MAX_PWM, MAX_PWM);
+  pid.SetSampleTime(10);
+}
+
+void loop() {
+  if (mpu.dmpGetCurrentFIFOPacket(fifoBuffer)) {
+    mpu.dmpGetQuaternion(&q, fifoBuffer);
+    mpu.dmpGetGravity(&gravity, &q);
+    mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
+
+    input = -ypr[1] * 180 / M_PI;
+
+    pid.Compute();
+    driveMotors(output);
+
+    Serial.print("PITCH: ");
+    Serial.print(input);
+    Serial.print(" | SETPOINT: ");
+    Serial.print(setpoint);
+    Serial.print(" | PID OUT: ");
+    Serial.println(output);
+  }
+}
+
+void driveMotors(double motorSpeed) {
+  int pwm = abs(motorSpeed);
+
+  if (pwm < DEADZONE) pwm = 0;
+  else if (pwm < MIN_EFFECTIVE_PWM) pwm = MIN_EFFECTIVE_PWM;
+
+  pwm = constrain(pwm, 0, MAX_PWM);
+
+  if (motorSpeed > 0) {
+    digitalWrite(motor1Pin1, LOW);
+    digitalWrite(motor1Pin2, HIGH);
+    digitalWrite(motor2Pin1, LOW);
+    digitalWrite(motor2Pin2, HIGH);
+  } else {
+    digitalWrite(motor1Pin1, HIGH);
+    digitalWrite(motor1Pin2, LOW);
+    digitalWrite(motor2Pin1, HIGH);
+    digitalWrite(motor2Pin2, LOW);
+  }
+
+  analogWrite(enableMotor1, pwm);
+  analogWrite(enableMotor2, pwm);
+}
+
+void stopMotors() {
+  analogWrite(enableMotor1, 0);
+  analogWrite(enableMotor2, 0);
+}
